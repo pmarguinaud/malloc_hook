@@ -27,6 +27,7 @@ void * for_alloc_allocatable (size_t size, void ** pptr, void ** a);
 void * for_dealloc_allocatable (void * ptr, void ** a);
 
 static size_t count = 0;
+static int verbose = 0;
 
 typedef struct
 {
@@ -161,7 +162,8 @@ static void * alloc (size_t size, void ** pptr, void ** a, alloc_t alloc_fun)
 
   newptr (*pptr, size + 2 * SIZE);
 
-  printf ("> ptr = 0x%llx (%d)\n", *pptr, size); fflush (stdout);
+  if (verbose)
+    printf ("> ptr = 0x%llx (%d) (%d)\n", *pptr, size, count); fflush (stdout);
 
   *pptr = (char*)(*pptr) + SIZE;
 
@@ -199,8 +201,6 @@ static void * dealloc (void * ptr, void ** a, dealloc_t dealloc_fun)
   void * p = ptr - SIZE;
   size_t size = delptr (p);
 
-  printf ("< ptr = 0x%llx (%d)\n", p, size - 2 * SIZE); fflush (stdout);
-
   if (size)
     {
       ptr = p;
@@ -208,6 +208,9 @@ static void * dealloc (void * ptr, void ** a, dealloc_t dealloc_fun)
     }
 
   void * ret = dealloc_fun (ptr, a);
+
+  if (verbose)
+    printf ("< ptr = 0x%llx (%d) (%d)\n", p, size - 2 * SIZE, count); fflush (stdout);
 
   return ret;
 }

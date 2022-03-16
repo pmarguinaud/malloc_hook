@@ -1,7 +1,10 @@
 
 REAL, ALLOCATABLE :: X (:), Y (:)
+REAL, POINTER :: Z (:)
 
 ALLOCATE (X (3), Y (4))
+
+ALLOCATE (Z (11))
 
 CALL TOTO (0)
 
@@ -9,6 +12,7 @@ DEALLOCATE (X)
 
 CALL TOTO (10)
 
+DEALLOCATE (Z)
 DEALLOCATE (Y)
 
 END
