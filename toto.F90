@@ -1,0 +1,14 @@
+SUBROUTINE TOTO (N)
+
+REAL :: X (N)
+REAL :: Y (N)
+
+X = 12
+Y = 34
+
+CALL TITI (X, Y)
+
+PRINT *, " X = ", X
+PRINT *, " Y = ", Y
+
+END SUBROUTINE
