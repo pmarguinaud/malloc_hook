@@ -11,10 +11,22 @@
 #include <string.h>
 
 
+typedef void * (*alloc_t)   (size_t, void **, void **);
+typedef void * (*dealloc_t) (void **, void **);
 
-static void * (*__for_allocate) (size_t, void **, void **) = NULL;
-static void * (*__for_dealloc_allocatable) (void **, void **) = NULL;
-static void * (*__for_deallocate) (void **, void **) = NULL;
+static alloc_t   __for_allocate            = NULL;
+static dealloc_t __for_deallocate          = NULL;
+
+static alloc_t   __for_alloc_allocatable   = NULL;
+static dealloc_t __for_dealloc_allocatable = NULL;
+
+void * for_allocate (size_t size, void ** pptr, void ** a);
+void * for_deallocate (void * ptr, void ** a);
+
+void * for_alloc_allocatable (size_t size, void ** pptr, void ** a);
+void * for_dealloc_allocatable (void * ptr, void ** a);
+
+static size_t count = 0;
 
 typedef struct
 {
@@ -22,9 +34,10 @@ typedef struct
   size_t siz;
 } ptr_t;
 
-#define N  3000000
-static ptr_t ptrlist[N];
+#define NPTR 3000000
+#define SIZE 128
 
+static ptr_t ptrlist[NPTR];
 
 static inline void init ()
 {
@@ -34,10 +47,23 @@ static inline void init ()
   printf (" INIT \n");
 
   __for_allocate            = dlsym (RTLD_NEXT, "for_allocate");
-  __for_dealloc_allocatable = dlsym (RTLD_NEXT, "for_dealloc_allocatable");
   __for_deallocate          = dlsym (RTLD_NEXT, "for_deallocate");
 
-  memset (&ptrlist[0], 0, N * sizeof (ptr_t));
+  __for_alloc_allocatable   = dlsym (RTLD_NEXT, "for_alloc_allocatable");
+  __for_dealloc_allocatable = dlsym (RTLD_NEXT, "for_dealloc_allocatable");
+
+  printf (" __for_allocate            = 0x%llx\n", __for_allocate);
+  printf (" __for_deallocate          = 0x%llx\n", __for_deallocate);
+  printf (" __for_alloc_allocatable   = 0x%llx\n", __for_alloc_allocatable);
+  printf (" __for_dealloc_allocatable = 0x%llx\n", __for_dealloc_allocatable);
+
+  printf ("   for_allocate            = 0x%llx\n",   for_allocate);
+  printf ("   for_deallocate          = 0x%llx\n",   for_deallocate);
+  printf ("   for_alloc_allocatable   = 0x%llx\n",   for_alloc_allocatable);
+  printf ("   for_dealloc_allocatable = 0x%llx\n",   for_dealloc_allocatable);
+
+  memset (&ptrlist[0], 0, NPTR * sizeof (ptr_t));
+  count = 0;
 }
 
 
@@ -54,17 +80,27 @@ static inline void * from ()
 
 static inline void newptr (void * Ptr, size_t Siz)
 {
-  int i;
-  char c = '+';
-  for (i = 0; i < N; i++)
-    if (ptrlist[i].ptr == NULL)
-      {
-        ptrlist[i].ptr = Ptr;
-        ptrlist[i].siz = Siz;
-        goto done;
-      }
-  abort ();
-done:
+  if (count >= NPTR)
+    abort ();
+
+  if (ptrlist[count].ptr != NULL)
+    abort ();
+
+  ptrlist[count].ptr = Ptr;
+  ptrlist[count].siz = Siz;
+
+  size_t * pind = (size_t*)Ptr;
+
+  *pind = count;
+
+  char * c = (char*)Ptr;
+  for (int i = sizeof (size_t); i < SIZE; i++)
+    c[i] = 'X';
+  for (int i = 0; i < SIZE; i++)
+    c[i+Siz-SIZE] = 'X';
+
+  count++;
+
   return;
 }
 
@@ -72,61 +108,98 @@ done:
 static inline size_t delptr (void * Ptr)
 {
   size_t Siz = 0;
-  int i;
-  for (i = 0; i < N; i++)
-    if (ptrlist[i].ptr == Ptr)
-      {
-        ptrlist[i].ptr = NULL;
-        Siz = ptrlist[i].siz;
-        break;
-      }
-  return Siz;
+  size_t Ind = *((size_t*)Ptr);
+
+  if (Ind >= count)
+    return 0;
+
+  if (ptrlist[Ind].ptr != Ptr)
+   {
+     int i;
+     Siz = 0;
+     for (i = 0; i < count; i++)
+       if (ptrlist[i].ptr == Ptr)
+         {
+           Siz = ptrlist[i].siz;
+           Ind = i;
+           break;
+         }
+    }
+  else
+    {
+      Siz = ptrlist[Ind].siz;
+    }
+
+  /* Not found */
+  if (Siz == 0)
+    return 0;
+
+
+  if (Ind == count-1)
+    {
+      ptrlist[count-1].ptr = NULL;
+      ptrlist[count-1].siz = 0;
+      count--;
+      return Siz;
+    }
+
+  ptrlist[Ind] = ptrlist[count-1];
+
+  size_t *pInd = (size_t*)ptrlist[Ind].ptr;
+  *pInd = Ind;
+
+  ptrlist[count-1].ptr = NULL;
+  ptrlist[count-1].siz = 0;
+  count--;
+
+  return Siz;;
 }
 
-#define SIZE 128
-
-void * for_allocate (size_t size, void ** pptr, void ** a)
+static void * alloc (size_t size, void ** pptr, void ** a, alloc_t alloc_fun)
 {
-  init ();
-
-  void * ret = __for_allocate (size + 2 * SIZE, pptr, a);
+  void * ret = alloc_fun (size + 2 * SIZE, pptr, a);
 
   newptr (*pptr, size + 2 * SIZE);
 
-  char * c = (char*)*pptr;
-  for (int i = 0; i < SIZE; i++)
-    c[i] = c[i+size+SIZE] = 'X';
-
-
-  printf ("> ptr = 0x%llx (%d)\n", *pptr, size);
+  printf ("> ptr = 0x%llx (%d)\n", *pptr, size); fflush (stdout);
 
   *pptr = (char*)(*pptr) + SIZE;
 
   return ret;
 }
 
+void * for_allocate (size_t size, void ** pptr, void ** a)
+{
+  init ();
+  return alloc (size, pptr, a, __for_allocate);
+}
+
+void * for_alloc_allocatable (size_t size, void ** pptr, void ** a)
+{
+  init ();
+  return alloc (size, pptr, a, __for_allocate);
+}
 
 static void checkptr (void * ptr, size_t size)
 {
   char * c = (char*)ptr;
+
+  for (int i = sizeof (size_t); i < SIZE; i++)
+    if (c[i] != 'X')
+      abort ();
+
   for (int i = 0; i < SIZE; i++)
-    {
-      if (c[i] != 'X')
-        abort ();
-      if (c[i+size+SIZE] != 'X')
-        abort ();
-    }
+    if (c[i+size+SIZE] != 'X')
+      abort ();
 
 }
 
-void * for_dealloc_allocatable (void * ptr, void ** a)
+static void * dealloc (void * ptr, void ** a, dealloc_t dealloc_fun)
 {
-  init ();
-
   void * p = ptr - SIZE;
   size_t size = delptr (p);
 
-  printf ("< ptr = 0x%llx (%d)\n", p, size - 2 * SIZE);
+  printf ("< ptr = 0x%llx (%d)\n", p, size - 2 * SIZE); fflush (stdout);
 
   if (size)
     {
@@ -134,30 +207,22 @@ void * for_dealloc_allocatable (void * ptr, void ** a)
       checkptr (ptr, size - 2 * SIZE);
     }
 
-  void * ret = __for_dealloc_allocatable (ptr, a);
+  void * ret = dealloc_fun (ptr, a);
 
   return ret;
+}
+
+void * for_dealloc_allocatable (void * ptr, void ** a)
+{
+  init ();
+  return dealloc (ptr, a, __for_deallocate);
 }
 
 
 void * for_deallocate (void * ptr, void ** a)
 {
   init ();
-
-  void * p = ptr - SIZE;
-  size_t size = delptr (p);
-
-  printf ("< ptr = 0x%llx (%lld)\n", p, size - 2 * SIZE);
-
-  if (size)
-    {
-      ptr = p;
-      checkptr (ptr, size - 2 * SIZE);
-    }
-
-  void * ret = __for_deallocate (ptr, a);
-
-  return ret;
+  return dealloc (ptr, a, __for_deallocate);
 }
 
 

@@ -1,6 +1,15 @@
 
+REAL, ALLOCATABLE :: X (:), Y (:)
+
+ALLOCATE (X (3), Y (4))
+
 CALL TOTO (0)
+
+DEALLOCATE (X)
+
 CALL TOTO (10)
+
+DEALLOCATE (Y)
 
 END
 
