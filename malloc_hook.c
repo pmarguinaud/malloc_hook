@@ -8,6 +8,7 @@
 #include <malloc.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <string.h>
 
 
 
@@ -25,62 +26,62 @@ typedef struct
 static ptr_t ptrlist[N];
 
 
-static void init_ ()
+static inline void init ()
 {
+  if (__for_allocate != NULL)
+    return;
+
   printf (" INIT \n");
 
   __for_allocate            = dlsym (RTLD_NEXT, "for_allocate");
   __for_dealloc_allocatable = dlsym (RTLD_NEXT, "for_dealloc_allocatable");
   __for_deallocate          = dlsym (RTLD_NEXT, "for_deallocate");
 
-  int i;
-  for (i = 0; i < N; i++)
-    ptrlist[i].ptr = NULL;
+  memset (&ptrlist[0], 0, N * sizeof (ptr_t));
 }
 
-#define init() do { if (__for_allocate == NULL) init_ (); } while (0)
 
-#define bt() \
-do {                                                                \
-  const int n = 3;                                                  \
-  int i;                                                            \
-  void * addr[n];                                                   \
-  for (i = 0; i < n; i++)                                           \
-    addr[i] = NULL;                                                 \
-  int m = backtrace (addr, n);                                      \
-} while (0)
-
+static inline void * from ()
+{
+  const int n = 3;
+  int i;
+  void * addr[n];
+  for (i = 0; i < n; i++)
+    addr[i] = NULL;
+  int m = backtrace (addr, n);
+  return addr[2];
+}
 
 static inline void newptr (void * Ptr, size_t Siz)
 {
-  int i;                                                            
-  char c = '+';                                                     
-  for (i = 0; i < N; i++)                                           
-    if (ptrlist[i].ptr == NULL)                                     
-      {                                                             
-        ptrlist[i].ptr = Ptr;                                       
-        ptrlist[i].siz = Siz;                                       
-        goto done;                                                  
-      }                                                             
-  abort ();                                                         
-done:                                                               
+  int i;
+  char c = '+';
+  for (i = 0; i < N; i++)
+    if (ptrlist[i].ptr == NULL)
+      {
+        ptrlist[i].ptr = Ptr;
+        ptrlist[i].siz = Siz;
+        goto done;
+      }
+  abort ();
+done:
   return;
-} 
+}
 
 
 static inline size_t delptr (void * Ptr)
 {
-  size_t Siz = 0;                                                   
-  int i;                                                            
-  for (i = 0; i < N; i++)                                           
-    if (ptrlist[i].ptr == Ptr)                                      
-      {                                                             
-        ptrlist[i].ptr = NULL;                                      
-        Siz = ptrlist[i].siz;                                       
-        break;                                                      
-      }                                                             
+  size_t Siz = 0;
+  int i;
+  for (i = 0; i < N; i++)
+    if (ptrlist[i].ptr == Ptr)
+      {
+        ptrlist[i].ptr = NULL;
+        Siz = ptrlist[i].siz;
+        break;
+      }
   return Siz;
-} 
+}
 
 #define SIZE 128
 
@@ -115,7 +116,7 @@ static void checkptr (void * ptr, size_t size)
       if (c[i+size+SIZE] != 'X')
         abort ();
     }
-  
+
 }
 
 void * for_dealloc_allocatable (void * ptr, void ** a)
