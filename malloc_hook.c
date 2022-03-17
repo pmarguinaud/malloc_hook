@@ -9,7 +9,10 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <string.h>
+#include <pthread.h>
 
+
+static pthread_spinlock_t lock;
 
 typedef void * (*alloc_t)   (size_t, void **, void **);
 typedef void * (*dealloc_t) (void **, void **);
@@ -28,24 +31,29 @@ void * for_dealloc_allocatable (void * ptr, void ** a);
 
 static size_t count = 0;
 static int verbose = 0;
+static double nan = 0.0;
 
 typedef struct
 {
   void * ptr;
   size_t siz;
+  void * loc;
 } ptr_t;
 
 #define NPTR 3000000
 #define SIZE 128
 
 static ptr_t ptrlist[NPTR];
+static int enabled = 0;
+static int fill = 0;
+
 
 static inline void init ()
 {
   if (__for_allocate != NULL)
     return;
 
-  printf (" INIT \n");
+  printf (" INIT X \n");
 
   __for_allocate            = dlsym (RTLD_NEXT, "for_allocate");
   __for_deallocate          = dlsym (RTLD_NEXT, "for_deallocate");
@@ -63,8 +71,32 @@ static inline void init ()
   printf ("   for_alloc_allocatable   = 0x%llx\n",   for_alloc_allocatable);
   printf ("   for_dealloc_allocatable = 0x%llx\n",   for_dealloc_allocatable);
 
+  char * MALLOC_HOOK = getenv ("MALLOC_HOOK");
+
+  if (MALLOC_HOOK == NULL)
+    return;
+
+  if (strcmp (MALLOC_HOOK, "1"))
+    return;
+
+
+  enabled = 1;
+
   memset (&ptrlist[0], 0, NPTR * sizeof (ptr_t));
   count = 0;
+
+  pthread_spin_init (&lock, PTHREAD_PROCESS_SHARED); 
+
+  char * MALLOC_HOOK_FILL = getenv ("MALLOC_HOOK_FILL");
+
+  if (MALLOC_HOOK_FILL != NULL)
+    if (strcmp (MALLOC_HOOK_FILL, "1") == 0)
+      fill = 1;
+
+  nan = 0./0.;
+
+  printf (" enabled = %d, fill = %d\n", enabled, fill);
+
 }
 
 
@@ -79,7 +111,7 @@ static inline void * from ()
   return addr[2];
 }
 
-static inline void newptr (void * Ptr, size_t Siz)
+static inline void newptr (void * Ptr, size_t Siz, void * Loc)
 {
   if (count >= NPTR)
     abort ();
@@ -89,6 +121,7 @@ static inline void newptr (void * Ptr, size_t Siz)
 
   ptrlist[count].ptr = Ptr;
   ptrlist[count].siz = Siz;
+  ptrlist[count].loc = Loc;
 
   size_t * pind = (size_t*)Ptr;
 
@@ -97,6 +130,15 @@ static inline void newptr (void * Ptr, size_t Siz)
   char * c = (char*)Ptr;
   for (int i = sizeof (size_t); i < SIZE; i++)
     c[i] = 'X';
+ 
+
+  if (fill)
+    {
+      char * nan8 = (char*)&nan;
+      for (int i = 0; i < Siz - 2 * SIZE; i++)
+        c[SIZE+i] = nan8[i%8];
+    }
+
   for (int i = 0; i < SIZE; i++)
     c[i+Siz-SIZE] = 'X';
 
@@ -106,7 +148,7 @@ static inline void newptr (void * Ptr, size_t Siz)
 }
 
 
-static inline size_t delptr (void * Ptr)
+static inline size_t delptr (void * Ptr, void ** Loc)
 {
   size_t Siz = 0;
   size_t Ind = *((size_t*)Ptr);
@@ -135,6 +177,7 @@ static inline size_t delptr (void * Ptr)
   if (Siz == 0)
     return 0;
 
+ *Loc = ptrlist[Ind].loc;
 
   if (Ind == count-1)
     {
@@ -159,13 +202,56 @@ static inline size_t delptr (void * Ptr)
 static void * alloc (size_t size, void ** pptr, void ** a, alloc_t alloc_fun)
 {
   void * ret = alloc_fun (size + 2 * SIZE, pptr, a);
-
-  newptr (*pptr, size + 2 * SIZE);
+  void * Loc[5];
+  
+  backtrace (&Loc[0], 5);
+  
+  newptr (*pptr, size + 2 * SIZE, Loc[2]);
 
   if (verbose)
-    printf ("> ptr = 0x%llx (%d) (%d)\n", *pptr, size, count); fflush (stdout);
+    printf ("> ptr = 0x%llx (%d) (%d) (0x%llx)\n", *pptr, size, count, Loc[2]); 
 
   *pptr = (char*)(*pptr) + SIZE;
+
+  return ret;
+}
+
+static void checkptr (void * ptr, size_t size, void * Loc)
+{
+  char * c = (char*)ptr;
+
+  for (int i = sizeof (size_t); i < SIZE; i++)
+    if (c[i] != 'X')
+      {
+        fprintf (stderr, "0x%llx of size %lld allocated at 0x%llx\n", ptr, size, Loc);
+        abort ();
+      }
+
+  for (int i = 0; i < SIZE; i++)
+    if (c[i+size+SIZE] != 'X')
+      {
+        fprintf (stderr, "0x%llx of size %lld allocated at 0x%llx\n", ptr, size, Loc);
+        abort ();
+      }
+
+}
+
+static void * dealloc (void * ptr, void ** a, dealloc_t dealloc_fun)
+{
+  void * p = ptr - SIZE;
+  void * Loc = NULL;
+  size_t size = delptr (p, &Loc);
+
+  if (size)
+    {
+      ptr = p;
+      checkptr (ptr, size - 2 * SIZE, Loc);
+    }
+
+  void * ret = dealloc_fun (ptr, a);
+
+  if (verbose)
+    printf ("< ptr = 0x%llx (%d) (%d)\n", p, size - 2 * SIZE, count);
 
   return ret;
 }
@@ -173,59 +259,90 @@ static void * alloc (size_t size, void ** pptr, void ** a, alloc_t alloc_fun)
 void * for_allocate (size_t size, void ** pptr, void ** a)
 {
   init ();
-  return alloc (size, pptr, a, __for_allocate);
+  if (enabled)
+    {
+      void * ret;
+     
+      pthread_spin_lock (&lock);
+      ret = alloc (size, pptr, a, __for_allocate);
+      pthread_spin_unlock (&lock);
+     
+      return ret;
+    }
+  else
+    {
+      return __for_allocate (size, pptr, a);
+    }
 }
 
 void * for_alloc_allocatable (size_t size, void ** pptr, void ** a)
 {
   init ();
-  return alloc (size, pptr, a, __for_allocate);
-}
-
-static void checkptr (void * ptr, size_t size)
-{
-  char * c = (char*)ptr;
-
-  for (int i = sizeof (size_t); i < SIZE; i++)
-    if (c[i] != 'X')
-      abort ();
-
-  for (int i = 0; i < SIZE; i++)
-    if (c[i+size+SIZE] != 'X')
-      abort ();
-
-}
-
-static void * dealloc (void * ptr, void ** a, dealloc_t dealloc_fun)
-{
-  void * p = ptr - SIZE;
-  size_t size = delptr (p);
-
-  if (size)
+  if (enabled)
     {
-      ptr = p;
-      checkptr (ptr, size - 2 * SIZE);
+      void * ret;
+
+      pthread_spin_lock (&lock);
+      ret = alloc (size, pptr, a, __for_allocate);
+      pthread_spin_unlock (&lock);
+
+      return ret;
     }
-
-  void * ret = dealloc_fun (ptr, a);
-
-  if (verbose)
-    printf ("< ptr = 0x%llx (%d) (%d)\n", p, size - 2 * SIZE, count); fflush (stdout);
-
-  return ret;
+  else
+    {
+      return __for_allocate (size, pptr, a);
+    }
 }
 
 void * for_dealloc_allocatable (void * ptr, void ** a)
 {
   init ();
-  return dealloc (ptr, a, __for_deallocate);
+  if (enabled)
+    {
+      void * ret;
+
+      pthread_spin_lock (&lock);
+      ret = dealloc (ptr, a, __for_deallocate);
+      pthread_spin_unlock (&lock);
+
+      return ret;
+    }
+  else
+    {
+      return __for_deallocate (ptr, a);
+    }
 }
 
 
 void * for_deallocate (void * ptr, void ** a)
 {
   init ();
-  return dealloc (ptr, a, __for_deallocate);
+  if (enabled)
+    {
+      void * ret;
+      
+      pthread_spin_lock (&lock);
+      ret = dealloc (ptr, a, __for_deallocate);
+      pthread_spin_unlock (&lock); 
+
+      return ret;
+    }
+  else
+    {
+      return __for_deallocate (ptr, a);
+    }
+}
+
+void malloc_hook_exit_ ()
+{
+  int i;
+  for (i = 0; i < count; i++)
+    {
+      size_t Siz = ptrlist[i].siz;
+      void * Ptr = ptrlist[i].ptr;
+      void * Loc = ptrlist[i].loc;
+      checkptr (Ptr, Siz, Loc);
+    }
 }
 
 

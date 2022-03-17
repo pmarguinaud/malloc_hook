@@ -1,19 +1,27 @@
 
 REAL, ALLOCATABLE :: X (:), Y (:)
-REAL, POINTER :: Z (:)
+REAL*8, POINTER :: Z (:)
 
 ALLOCATE (X (3), Y (4))
 
 ALLOCATE (Z (11))
 
+PRINT *, " Z = ", Z
+
 CALL TOTO (0)
+
 
 DEALLOCATE (X)
 
 CALL TOTO (10)
 
+Z (12) = 55.
+
 DEALLOCATE (Z)
 DEALLOCATE (Y)
+
+
+CALL MALLOC_HOOK_EXIT
 
 END
 
