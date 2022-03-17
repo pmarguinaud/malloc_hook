@@ -148,63 +148,59 @@ static inline void newptr (void * Ptr, size_t Siz, void * Loc)
 }
 
 
-static inline size_t delptr (void * Ptr, void ** Loc)
+static inline int delptr (void * Ptr, ptr_t * pp)
 {
-  size_t Siz = 0;
   size_t Ind = *((size_t*)Ptr);
+  ptr_t pp0;
+
+  pp0.siz = 0; pp0.ptr = pp0.loc = NULL;
+
+ *pp = pp0;
 
   if (Ind >= count)
-    return 0;
+    goto end;
 
   if (ptrlist[Ind].ptr != Ptr)
    {
      int i;
-     Siz = 0;
      for (i = 0; i < count; i++)
        if (ptrlist[i].ptr == Ptr)
          {
-           Siz = ptrlist[i].siz;
+          *pp = ptrlist[i];
            Ind = i;
            break;
          }
     }
   else
     {
-      Siz = ptrlist[Ind].siz;
+     *pp = ptrlist[Ind];
     }
 
   /* Not found */
-  if (Siz == 0)
-    return 0;
+  if (pp->siz == 0)
+    goto end;
 
- *Loc = ptrlist[Ind].loc;
-
-  if (Ind == count-1)
+  if (Ind != count-1)
     {
-      ptrlist[count-1].ptr = NULL;
-      ptrlist[count-1].siz = 0;
-      count--;
-      return Siz;
+      ptrlist[Ind] = ptrlist[count-1];
+      size_t *pInd = (size_t*)ptrlist[Ind].ptr;
+      *pInd = Ind;
     }
 
-  ptrlist[Ind] = ptrlist[count-1];
-
-  size_t *pInd = (size_t*)ptrlist[Ind].ptr;
-  *pInd = Ind;
-
-  ptrlist[count-1].ptr = NULL;
-  ptrlist[count-1].siz = 0;
+  ptrlist[count-1] = pp0;
   count--;
 
-  return Siz;;
+
+end:
+  return pp->siz;
 }
 
 static void * alloc (size_t size, void ** pptr, void ** a, alloc_t alloc_fun)
 {
   void * ret = alloc_fun (size + 2 * SIZE, pptr, a);
-  void * Loc[5];
+  void * Loc[3];
   
-  backtrace (&Loc[0], 5);
+  backtrace (&Loc[0], 3);
   
   newptr (*pptr, size + 2 * SIZE, Loc[2]);
 
@@ -240,18 +236,18 @@ static void * dealloc (void * ptr, void ** a, dealloc_t dealloc_fun)
 {
   void * p = ptr - SIZE;
   void * Loc = NULL;
-  size_t size = delptr (p, &Loc);
+  ptr_t pp;
 
-  if (size)
+  if (delptr (p, &pp))
     {
       ptr = p;
-      checkptr (ptr, size - 2 * SIZE, Loc);
+      checkptr (ptr, pp.siz - 2 * SIZE, pp.loc);
     }
 
   void * ret = dealloc_fun (ptr, a);
 
   if (verbose)
-    printf ("< ptr = 0x%llx (%d) (%d)\n", p, size - 2 * SIZE, count);
+    printf ("< ptr = 0x%llx (%d) (%d)\n", p, pp.siz - 2 * SIZE, count);
 
   return ret;
 }
@@ -341,7 +337,7 @@ void malloc_hook_exit_ ()
       size_t Siz = ptrlist[i].siz;
       void * Ptr = ptrlist[i].ptr;
       void * Loc = ptrlist[i].loc;
-      checkptr (Ptr, Siz, Loc);
+      checkptr (Ptr, Siz - 2 * SIZE, Loc);
     }
 }
 
